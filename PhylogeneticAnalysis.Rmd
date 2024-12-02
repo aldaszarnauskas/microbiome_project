@@ -1,0 +1,159 @@
+---
+title: "Creating an OTU table"
+author: "Aldas Zarnauskas"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r libraries}
+library(tidyverse)
+library(phyloseq)
+library(ggplot2)
+library(vegan)
+
+theme_set(theme_bw())
+```
+
+```{r data}
+feature_table <- read_delim("data/feature-table.tsv", col_names = T, delim = "\t", skip = 1)
+feature_table <- column_to_rownames(feature_table, var = "#OTU ID")
+taxonomy_table <- read_delim("data/taxonomy.tsv", col_names = T, delim = "\t")
+
+taxmat_new <- separate(taxonomy_table, col = "Taxon", sep = ";", into = c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species"), remove = T, fill = "warn")
+taxmat_new <- apply(taxmat_new, 2, function(x) gsub("^d__|^p__|^c__|^o__|^f__|^g__|^s__", "", x ))
+
+taxmat = as.matrix(taxmat_new[,2:8])
+rownames(taxmat) <- taxonomy_table[["Feature ID"]]
+
+```
+```{r metadata}
+metadata <- read_tsv("/home/aldas/bioinformatics/microbiome_project/Microbiome_project_downstream_analysis/data/filereport_read_run_PRJNA560950_tsv.txt", col_names = T)
+
+metadata <- metadata[, c("sample_alias", "run_accession")]
+
+metadata.new <- data.frame(
+  sample_alias = c(sort(metadata$sample_alias)),
+  treatment = c(rep("Control", 5),
+                rep("Tapioca", 5),
+                rep("Potato", 5),
+                rep("Potato", 5),
+                rep("Control", 5),
+                rep("Control", 5),
+                rep("Maize", 5),
+                rep("Tapioca", 5),
+                rep("Maize", 5),
+                rep("Maize", 5),
+                rep("Tapioca", 5),
+                rep("Tapioca", 5),
+                rep("Tapioca", 5),
+                rep("Potato", 5),
+                rep("Maize", 5),
+                rep("Control", 5),
+                rep("Control", 5),
+                rep("Maize", 5),
+                rep("Potato", 5),
+                rep("Potato", 5),
+                
+                rep("Potato", 5),
+                rep("Maize", 5),
+                rep("Tapioca", 5),
+                rep("Control", 5),
+                rep("Control", 5),
+                rep("Tapioca", 5),
+                rep("Potato", 5),
+                rep("Tapioca", 5),
+                rep("Maize", 5),
+                rep("Maize", 5),
+                rep("Control", 5),
+                rep("Potato", 5),
+                rep("Maize", 5),
+                rep("Tapioca", 5),
+                rep("Potato", 5),
+                rep("Control", 5),
+                rep("Control", 5),
+                rep("Maize", 5),
+                rep("Potato", 5),
+                rep("Tapioca", 5)
+                
+))
+
+metadata.new$time <- lapply(metadata.new$sample_alias, function(x) substr(x, 4, 5))
+metadata.new$sampleID <- lapply(metadata.new$sample_alias, function(x) substr(x, 1, 3))
+metadata.new <- metadata.new %>%  
+  dplyr::mutate(dose = case_when(time == "W0" ~ 0,
+                                 time == "W1" ~ 10,
+                                 time == "W2" ~ 20,
+                                 time == "W3" ~ 35,
+                                 time == "W4" ~ 50))
+metadata.merged <- merge(metadata, metadata.new, by = "sample_alias")
+metadata.final <- column_to_rownames(metadata.merged, var = "run_accession")
+```
+
+```{r tree}
+phylotree <- read_tree("../exported-phylogeny-align-to-tree-mafft-fasttree/tree.nwk")
+```
+
+```{r phyloseq}
+OTU <- otu_table(feature_table, taxa_are_rows=T)
+TAX <- tax_table(taxmat)
+metadata <- sample_data(metadata.final)
+tree <- phy_tree(phylotree)
+physeq <- phyloseq(OTU, TAX, metadata, tree)
+```
+
+# Data Analysis and Visualisation
+
+```{r alpha diversity}
+alpha_meas = c("Observed"
+               , "Chao1", "ACE", "Shannon", "Simpson", "InvSimpson"
+               )
+p1 <- plot_richness(physeq, "dose",  measures=alpha_meas)
+
+p1$data$dose <- as.factor(p1$data$dose)
+
+p1_observed <- as.data.frame(p1$data) %>% subset(variable == "Observed")
+p1_Chao1 <- as.data.frame(p1$data) %>% subset(variable == "Chao1")
+p1_ACE <- as.data.frame(p1$data) %>% subset(variable == "ACE")
+p1_Shannon <- as.data.frame(p1$data) %>% subset(variable == "Shannon")
+p1_Simpson <- as.data.frame(p1$data) %>% subset(variable == "Simpson")
+p1_InvSimpson <- as.data.frame(p1$data) %>% subset(variable == "InvSimpson")
+
+
+p1_observed.plot <- ggplot(p1_observed, aes(x=dose, y=value, fill = treatment)) +  
+  geom_violin() +
+  facet_grid(~ treatment) +
+  labs(x="Dose grams", y="Observed alpha diversity")
+
+p1_shannon.plot <- ggplot(p1_Shannon, aes(x=dose, y=value, fill = treatment)) +  
+  geom_violin() +
+  facet_grid(~ treatment) +
+  labs(x="Dose grams", y="Shannon alpha diversity")
+```
+
+```{r Bray-curtis dissimilarity}
+bray_curtis_dist <- as.matrix(vegdist(t(OTU), method = "bray"))
+bray_curtis_dist[1:3,1:3]
+
+ord.meas <- ordinate(physeq, method = "PCoA", distance = "bray")
+plot_ordination(physeq, ord.meas)+ geom_point(aes(colour=treatment),size=2) + 
+  theme_classic() + 
+  theme(text = element_text(size=18), axis.text = element_text(size=16), 
+        legend.position = "right") +
+  ggtitle("PCoA: Bray-Curtis")
+```
+
+
+
+
+
+
+
+
+
+
