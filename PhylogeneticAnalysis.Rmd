@@ -17,21 +17,53 @@ library(phyloseq)
 library(ggplot2)
 library(vegan)
 
-theme_set(theme_bw())
+theme_set(theme_classic())
 ```
 
-```{r data}
-feature_table <- read_delim("data/feature-table.tsv", col_names = T, delim = "\t", skip = 1)
-feature_table <- column_to_rownames(feature_table, var = "#OTU ID")
+```{r OTU and taxonomy}
+#Load the OTU table
+OTU <- read_delim("data/feature-table.tsv", col_names = T, delim = "\t", skip = 1)
+#Make OTU IDs as rownames
+OTU <- column_to_rownames(OTU, var = "#OTU ID")
+
+#Import taxonomy table. Taxonomy table specifies taxonomic classification for each OTU ID
 taxonomy_table <- read_delim("data/taxonomy.tsv", col_names = T, delim = "\t")
+#Divide Taxon column into taxa. All taxon in the Taxon column is merged.
+tax.clean <- separate(taxonomy_table, col = "Taxon", sep = ";", into = c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species"), remove = T, fill = "warn")
+tax.clean <- apply(tax.clean, 2, function(x) gsub("^d__|^p__|^c__|^o__|^f__|^g__|^s__", "", x ))
 
-taxmat_new <- separate(taxonomy_table, col = "Taxon", sep = ";", into = c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species"), remove = T, fill = "warn")
-taxmat_new <- apply(taxmat_new, 2, function(x) gsub("^d__|^p__|^c__|^o__|^f__|^g__|^s__", "", x ))
+#Substitute NA or __ cells with an empty string ""
+tax.clean[is.na(tax.clean)] <- ""
+tax.clean[tax.clean=="__"] <- ""
 
-taxmat = as.matrix(taxmat_new[,2:8])
-rownames(taxmat) <- taxonomy_table[["Feature ID"]]
+#Make Feature IDs column as rownames
+tax.clean <- tax.clean %>% as.data.frame() %>%  column_to_rownames(var = "Feature ID")
 
+#Substitute any unassigned taxon classification with unclassified + lowest assigned taxonomic classification
+for (i in 1:nrow(tax.clean)){
+  if (tax.clean[i,7] != ""){
+    tax.clean$Species[i] <- paste(tax.clean$Genus[i], tax.clean$Species[i], sep = " ")
+  } else if (tax.clean[i,2] == ""){
+    kingdom <- paste("Unclassified", tax.clean[i,1], sep = " ")
+    tax.clean[i, 2:7] <- kingdom
+  } else if (tax.clean[i,3] == ""){
+    phylum <- paste("Unclassified", tax.clean[i,2], sep = " ")
+    tax.clean[i, 3:7] <- phylum
+  } else if (tax.clean[i,4] == ""){
+    class <- paste("Unclassified", tax.clean[i,3], sep = " ")
+    tax.clean[i, 4:7] <- class
+  } else if (tax.clean[i,5] == ""){
+    order <- paste("Unclassified", tax.clean[i,4], sep = " ")
+    tax.clean[i, 5:7] <- order
+  } else if (tax.clean[i,6] == ""){
+    family <- paste("Unclassified", tax.clean[i,5], sep = " ")
+    tax.clean[i, 6:7] <- family
+  } else if (tax.clean[i,7] == ""){
+    tax.clean$Species[i] <- paste("Unclassified ",tax.clean$Genus[i], sep = " ")
+  }
+}
 ```
+
 ```{r metadata}
 metadata <- read_tsv("/home/aldas/bioinformatics/microbiome_project/Microbiome_project_downstream_analysis/data/filereport_read_run_PRJNA560950_tsv.txt", col_names = T)
 
@@ -100,16 +132,23 @@ phylotree <- read_tree("../exported-phylogeny-align-to-tree-mafft-fasttree/tree.
 ```
 
 ```{r phyloseq}
-OTU <- otu_table(feature_table, taxa_are_rows=T)
-TAX <- tax_table(taxmat)
+OTU <- otu_table(OTU, taxa_are_rows=T)
+TAX <- tax_table(tax.clean[,1:7] %>% as.matrix())
 metadata <- sample_data(metadata.final)
 tree <- phy_tree(phylotree)
 physeq <- phyloseq(OTU, TAX, metadata, tree)
 ```
 
+```{r removing}
+rm(list = setdiff(ls(all.names = T), "physeq"))
+```
+
+
 # Data Analysis and Visualisation
 
 ```{r alpha diversity}
+#In the documentation, authors state that we should use not-trimmed and unnormalised counts to calculate alpha diversity.
+
 alpha_meas = c("Observed"
                , "Chao1", "ACE", "Shannon", "Simpson", "InvSimpson"
                )
@@ -130,16 +169,43 @@ p1_observed.plot <- ggplot(p1_observed, aes(x=dose, y=value, fill = treatment)) 
   facet_grid(~ treatment) +
   labs(x="Dose grams", y="Observed alpha diversity")
 
+
 p1_shannon.plot <- ggplot(p1_Shannon, aes(x=dose, y=value, fill = treatment)) +  
   geom_violin() +
   facet_grid(~ treatment) +
   labs(x="Dose grams", y="Shannon alpha diversity")
 ```
 
-```{r Bray-curtis dissimilarity}
-bray_curtis_dist <- as.matrix(vegdist(t(OTU), method = "bray"))
-bray_curtis_dist[1:3,1:3]
+```{r estimate richness}
+ps_control <- subset_samples(physeq, treatment=="Control")
+rich_control = estimate_richness(ps_control, measures = c("Observed", "Shannon"))
+wilcox.shannonC <- pairwise.wilcox.test(rich_control$Shannon, 
+                                        sample_data(ps_control)$dose, 
+                                        p.adjust.method = "BH")
 
+ps_Tapioca <- subset_samples(physeq, treatment=="Tapioca")
+rich_Tapioca = estimate_richness(ps_Tapioca, measures = c("Observed", "Shannon"))
+wilcox.shannonT <- pairwise.wilcox.test(rich_Tapioca$Shannon, 
+                                        sample_data(ps_Tapioca)$dose, 
+                                        p.adjust.method = "BH")
+
+ps_Maize <- subset_samples(physeq, treatment=="Maize")
+rich_Maize = estimate_richness(ps_Maize, measures = c("Observed", "Shannon"))
+wilcox.shannonM <- pairwise.wilcox.test(rich_Maize$Shannon, 
+                                        sample_data(ps_Maize)$dose, 
+                                        p.adjust.method = "BH")
+
+ps_Potato <- subset_samples(physeq, treatment=="Potato")
+
+rich_Potato = estimate_richness(ps_Potato, measures = c("Observed", "Shannon"))
+wilcox.shannonP <- pairwise.wilcox.test(rich_Potato$Shannon, 
+                                        sample_data(ps_Potato)$dose, 
+                                        p.adjust.method = "BH")
+```
+
+
+```{r Bray-curtis dissimilarity}
+#bray_curtis_dist <- as.matrix(vegdist(t(otu_table(physeq)), method = "bray"))
 ord.meas <- ordinate(physeq, method = "PCoA", distance = "bray")
 plot_ordination(physeq, ord.meas)+ geom_point(aes(colour=treatment),size=2) + 
   theme_classic() + 
@@ -148,10 +214,81 @@ plot_ordination(physeq, ord.meas)+ geom_point(aes(colour=treatment),size=2) +
   ggtitle("PCoA: Bray-Curtis")
 ```
 
+```{r functions}
+library(ComplexHeatmap)
+library(DESeq2)
+
+ps <- physeq
+
+dta <- function(ps_object, treatment, taxa){
+  ps_object <- subset_samples(ps_object, treatment=treatment)
+  sample_data(ps_object)$dose <- as.factor(sample_data(ps_object)$dose)
+  ps_object <- tax_glom(ps_object, taxrank = taxa)
+  
+  ds = phyloseq_to_deseq2(ps_object, ~ dose)
+  rownames(ds) <- tax_table(ps_object)[,taxa] %>% as.vector()
+  ds = DESeq(ds)
+  r1 <- results(ds, contrast=c("dose", 0, 10))
+  r2 <- results(ds, contrast=c("dose", 0, 20))
+  r3 <- results(ds, contrast=c("dose", 0, 35))
+  r4 <- results(ds, contrast=c("dose", 0, 50))
+  res <- list(r1,r2,r3,r4)
+  
+  return(res)
+}
 
 
 
+taxa <- "Phylum"
+treatment <- "Tapioca"
 
+log2FC_val <- function(ps, treatment, taxa){
+  
+  dta_results <- dta(ps, treatment, taxa)
+  
+  doses <- c("10", "20", "35", "50")
+  count <- 1
+  
+  merged_df <- ""
+  
+  for (dose in doses){
+    df <- dta_results[count] %>% as.data.frame() %>%  
+      rownames_to_column(var = taxa) %>% 
+      .[,c(taxa, "log2FoldChange")] %>% 
+      {colnames(.) <- c(taxa, paste(dose, "g-0g", sep = ""));.}
+
+    if (class(merged_df) != "data.frame"){
+      merged_df <- df
+    }
+    else{
+      
+      merged_df <- merge(merged_df, df, by=taxa)
+
+    }
+    count <- count + 1
+  }
+  merged_df <- column_to_rownames(merged_df, var = taxa)
+  return(merged_df)
+}
+```
+
+```{r Heatmap}
+
+log2FC_res <- log2FC_val(ps, "Tapioca", "Phylum")
+h1 <- Heatmap(log2FC_res %>% as.matrix())
+
+log2FC_res <- log2FC_val(ps, "Control", "Phylum")
+h2 <- Heatmap(log2FC_res %>% as.matrix())
+
+log2FC_res <- log2FC_val(ps, "Tapioca", "Family")
+h3 <- Heatmap(log2FC_res %>% as.matrix())
+
+log2FC_res <- log2FC_val(ps, "Control", "Family")
+h4 <- Heatmap(log2FC_res %>% as.matrix())
+
+h1 + h2
+h3 + h4
+```
 
 
 
