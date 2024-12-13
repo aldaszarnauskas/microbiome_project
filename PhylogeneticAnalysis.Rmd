@@ -219,7 +219,7 @@ plot_ordination(physeq, ord.meas)+ geom_point(aes(colour=treatment),size=2) +
 ```{r functions}
 dta <- function(ps, treatment, taxa) {
   
-  ps_object <- subset_samples(ps, treatment == eval(parse(text = "supplement")))
+  ps_object <- subset_samples(ps, treatment == treatment)
   sample_data(ps_object)$dose <- as.factor(sample_data(ps_object)$dose)
   ps_object <- tax_glom(ps_object, taxrank = taxa)
   
@@ -277,7 +277,7 @@ heatmap_matrix <- function(phyla, phyla_list){
   log2FC_results <- list()
   
   for (supplement in supplements) {
-    # Compute log2FC values and extract the "Firmicute" row
+    # Compute log2FC values and extract the phyla list
     log2FC_results[[supplement]] <- log2FC_val(physeq, supplement, phyla) %>% .[phyla_list, ]
   }
   
