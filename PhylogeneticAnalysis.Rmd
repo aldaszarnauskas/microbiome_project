@@ -16,18 +16,20 @@ library(tidyverse)
 library(phyloseq)
 library(ggplot2)
 library(vegan)
+library(ComplexHeatmap)
+library(DESeq2)
 
 theme_set(theme_classic())
 ```
 
 ```{r OTU and taxonomy}
 #Load the OTU table
-OTU <- read_delim("data/feature-table.tsv", col_names = T, delim = "\t", skip = 1)
+OTU <- read_delim("~/bioinformatics/microbiome_project/Microbiome_project_downstream_analysis/data/feature-table.tsv", col_names = T, delim = "\t", skip = 1)
 #Make OTU IDs as rownames
 OTU <- column_to_rownames(OTU, var = "#OTU ID")
 
 #Import taxonomy table. Taxonomy table specifies taxonomic classification for each OTU ID
-taxonomy_table <- read_delim("data/taxonomy.tsv", col_names = T, delim = "\t")
+taxonomy_table <- read_delim("~/bioinformatics/microbiome_project/Microbiome_project_downstream_analysis/data/taxonomy.tsv", col_names = T, delim = "\t")
 #Divide Taxon column into taxa. All taxon in the Taxon column is merged.
 tax.clean <- separate(taxonomy_table, col = "Taxon", sep = ";", into = c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species"), remove = T, fill = "warn")
 tax.clean <- apply(tax.clean, 2, function(x) gsub("^d__|^p__|^c__|^o__|^f__|^g__|^s__", "", x ))
@@ -128,7 +130,7 @@ metadata.final <- column_to_rownames(metadata.merged, var = "run_accession")
 ```
 
 ```{r tree}
-phylotree <- read_tree("../exported-phylogeny-align-to-tree-mafft-fasttree/tree.nwk")
+phylotree <- read_tree("/home/aldas/bioinformatics/microbiome_project/exported-phylogeny-align-to-tree-mafft-fasttree/tree.nwk")
 ```
 
 ```{r phyloseq}
@@ -215,79 +217,121 @@ plot_ordination(physeq, ord.meas)+ geom_point(aes(colour=treatment),size=2) +
 ```
 
 ```{r functions}
-library(ComplexHeatmap)
-library(DESeq2)
-
-ps <- physeq
-
-dta <- function(ps_object, treatment, taxa){
-  ps_object <- subset_samples(ps_object, treatment=treatment)
+dta <- function(ps, treatment, taxa) {
+  
+  ps_object <- subset_samples(ps, treatment == eval(parse(text = "supplement")))
   sample_data(ps_object)$dose <- as.factor(sample_data(ps_object)$dose)
   ps_object <- tax_glom(ps_object, taxrank = taxa)
   
-  ds = phyloseq_to_deseq2(ps_object, ~ dose)
-  rownames(ds) <- tax_table(ps_object)[,taxa] %>% as.vector()
-  ds = DESeq(ds)
-  r1 <- results(ds, contrast=c("dose", 0, 10))
-  r2 <- results(ds, contrast=c("dose", 0, 20))
-  r3 <- results(ds, contrast=c("dose", 0, 35))
-  r4 <- results(ds, contrast=c("dose", 0, 50))
-  res <- list(r1,r2,r3,r4)
+  ds <- phyloseq_to_deseq2(ps_object, ~ dose)
+  rownames(ds) <- tax_table(ps_object)[, taxa] %>% as.vector()
+  ds <- DESeq(ds)
   
+  r1 <- results(ds, contrast = c("dose", 0, 10))
+  r2 <- results(ds, contrast = c("dose", 0, 20))
+  r3 <- results(ds, contrast = c("dose", 0, 35))
+  r4 <- results(ds, contrast = c("dose", 0, 50))
+  
+  res <- list(r1 = r1, r2 = r2, r3 = r3, r4 = r4)
   return(res)
 }
 
-
-
-taxa <- "Phylum"
-treatment <- "Tapioca"
-
-log2FC_val <- function(ps, treatment, taxa){
-  
+# log2FC_val function
+log2FC_val <- function(ps, treatment, taxa) {
+  # Get results from dta function
   dta_results <- dta(ps, treatment, taxa)
   
+  # Define doses
   doses <- c("10", "20", "35", "50")
-  count <- 1
   
-  merged_df <- ""
+  # Initialize merged_df as NULL
+  merged_df <- NULL
   
-  for (dose in doses){
-    df <- dta_results[count] %>% as.data.frame() %>%  
+  # Iterate over doses and results
+  for (i in seq_along(doses)) {
+    dose <- doses[i]
+    result_df <- dta_results[[i]] %>% 
+      as.data.frame() %>% 
       rownames_to_column(var = taxa) %>% 
-      .[,c(taxa, "log2FoldChange")] %>% 
-      {colnames(.) <- c(taxa, paste(dose, "g-0g", sep = ""));.}
-
-    if (class(merged_df) != "data.frame"){
-      merged_df <- df
+      select(taxa, log2FoldChange) %>% 
+      rename_with(~ paste(dose, "g-0g", sep = ""), .cols = log2FoldChange)
+    
+    # Merge with the accumulated data frame
+    if (is.null(merged_df)) {
+      merged_df <- result_df
+    } else {
+      merged_df <- merge(merged_df, result_df, by = taxa, all = TRUE)
     }
-    else{
-      
-      merged_df <- merge(merged_df, df, by=taxa)
-
-    }
-    count <- count + 1
   }
+  
+  # Convert back to a data frame with row names
   merged_df <- column_to_rownames(merged_df, var = taxa)
   return(merged_df)
 }
 ```
 
+
 ```{r Heatmap}
+heatmap_matrix <- function(phyla, phyla_list){
+  supplements <- c("Tapioca", "Maize", "Potato", "Control")
+  log2FC_results <- list()
+  
+  for (supplement in supplements) {
+    # Compute log2FC values and extract the "Firmicute" row
+    log2FC_results[[supplement]] <- log2FC_val(physeq, supplement, phyla) %>% .[phyla_list, ]
+  }
+  
+  tapioca_maize <- merge(log2FC_results[["Tapioca"]], log2FC_results[["Maize"]], 
+                         by = "row.names", suffixes = c("tapioca", "maize"))
+  potato_contro <- merge(log2FC_results[["Potato"]], log2FC_results[["Control"]], 
+                         by = "row.names", suffixes = c("potato", "control"))
+  phyla_df <- merge(tapioca_maize, potato_contro, by = "Row.names") %>% 
+    column_to_rownames(var = "Row.names") %>% as.matrix()
+  return(phyla_df)
+}
 
-log2FC_res <- log2FC_val(ps, "Tapioca", "Phylum")
-h1 <- Heatmap(log2FC_res %>% as.matrix())
+phylum_df <- heatmap_matrix("Phylum", c("Firmicutes"))
+family_df <- heatmap_matrix("Family", c("Porphyromonadaceae","Prevotellaceae",
+                                        "Bacteroidaceae", "Enterobacteriaceae"))
+genera_df <- heatmap_matrix("Genus", c("Parabacteroides", "Prevotella",
+                                        "Butyricimonas", "Unclassified Ruminococcaceae",
+                                        "Ruminococcus", "Butyricicoccus",
+                                        "Paraprevotella", "Bacteroides", "Bilophila"))
 
-log2FC_res <- log2FC_val(ps, "Control", "Phylum")
-h2 <- Heatmap(log2FC_res %>% as.matrix())
 
-log2FC_res <- log2FC_val(ps, "Tapioca", "Family")
-h3 <- Heatmap(log2FC_res %>% as.matrix())
+heatmap_colnames <- c(rep(c("10g-0g", "20g-0g", "35g-0g", "50g-0g"), 4))
 
-log2FC_res <- log2FC_val(ps, "Control", "Family")
-h4 <- Heatmap(log2FC_res %>% as.matrix())
+phylum_heatmap <- Heatmap(phylum_df, 
+        column_split = c(rep("Tapioca RS4", 4), rep("Maize RS4", 4), 
+                         rep("Potato RS4", 4), rep("Corn Starch", 4)), 
+        column_order =1:16, column_gap = unit(5, "mm"),
+        show_column_names = F,
+        show_row_dend = F,
+        heatmap_height = unit(1, "cm"),
+        col = colorRampPalette(c("darkgreen", "white", "darkgoldenrod"))(50)
+        )
+family_heatmap <- Heatmap(family_df, 
+                          column_split = c(rep("Tapioca RS4", 4), rep("Maize RS4", 4), 
+                                           rep("Potato RS4", 4), rep("Corn", 4)), 
+                          column_order =1:16, column_gap = unit(5, "mm"),
+                          show_column_names = F,
+                          show_row_dend = F,
+                          heatmap_height = unit(1.5, "cm"),
+                          col = colorRampPalette(c("darkgreen", "white", "darkgoldenrod"))(50)
+)
+genera_heatmap <- Heatmap(genera_df, 
+                          column_split = c(rep("Tapioca RS4", 4), rep("Maize RS4", 4), 
+                                           rep("Potato RS4", 4), rep("Corn", 4)), 
+                          column_order =1:16, column_gap = unit(5, "mm"),
+                          column_labels = heatmap_colnames,
+                          show_row_dend = F,
+                          heatmap_height = unit(5, "cm"),
+                          col = colorRampPalette(c("darkgreen", "white", "darkgoldenrod"))(50)
+)
 
-h1 + h2
-h3 + h4
+phylum_heatmap %v% family_heatmap %v% genera_heatmap
+# This heatmap has four identical heatmaps for Corn Starch, Maize RS4, Potato RS4 and Tapioca RS4. This is happened because there is an issue to subset phyloseq object to contain only samples of one of this supplement. The phyloseq package function subset_samples does not work well within user defined functions. This requires further optimisation to construct a correct heatmap shown below.
+
 ```
 
 
